@@ -185,8 +185,8 @@ int32_t APS5_VABI sceAudioInAsyncOpen(int32_t user_id, uint32_t type, uint32_t i
  return 0;
 }
 
-APS5_EXPORT("X+4jdIS75P0", sceAudioInUnknown_X4jdIS75P0);
-int32_t APS5_VABI sceAudioInUnknown_X4jdIS75P0(void) {
+int32_t APS5_VABI sceAudioInIsPadEmbeddedMic(int32_t handle) {
+ (void)handle;
  NotImplemented_nid_no_patch(__func__);
  return 0;
 }
