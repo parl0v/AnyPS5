@@ -80,7 +80,9 @@ MemoryUse memoryUse(const std::uint8_t* code, const Insn& insn) {
         if ((op <= 0x3f && (op & 7) <= 3) || (op >= 0x84 && op <= 0x8b) || op == 0x8d) use.UsesRsp = true;
     }
     if (mod == 3) {
-        if (rm == kRegRsp && !b) use.UsesRsp = true;
+        // Only general-purpose one-byte forms name RSP here; SIMD and x87 forms name xmm4/st(4).
+        const bool generalPurpose = !vex && !info.IsTwoByteOpcode && !(info.Opcode >= 0xd8 && info.Opcode <= 0xdf);
+        if (generalPurpose && rm == kRegRsp && !b) use.UsesRsp = true;
         return use;
     }
     std::size_t at = info.ModRmOffset + 1;
