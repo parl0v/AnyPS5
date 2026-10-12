@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <tlhelp32.h>
 #include "prx/libc/include/GuestArena.hpp"
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -238,13 +239,73 @@ bool HandleSse4a(EXCEPTION_POINTERS* info) {
     return true;
 }
 
+// Faults this handler resumed, newest last: Windows dispatches each one on the faulting thread's
+// stack directly below rsp, which overwrites the SysV red zone of a guest leaf function.
+struct ResumedFault {
+    DWORD thread;
+    DWORD kind;
+    std::uint64_t rsp;
+    std::uint64_t rip;
+    std::uint64_t address;
+    ULONGLONG tick;
+};
+constexpr std::size_t ResumedFaultCapacity = 4096;
+ResumedFault g_resumedFaults[ResumedFaultCapacity];
+std::atomic<std::uint64_t> g_resumedFaultCount{0};
+std::atomic<std::uint64_t> g_resumedByKind[5]{};
+const char* const ResumedFaultKinds[5] = {"?", "retarget", "guest-write", "watch", "sse4a"};
+
+LONG resumed(EXCEPTION_POINTERS* info, DWORD kind) {
+    const auto index = g_resumedFaultCount.fetch_add(1, std::memory_order_relaxed);
+    g_resumedByKind[kind].fetch_add(1, std::memory_order_relaxed);
+    auto& entry = g_resumedFaults[index % ResumedFaultCapacity];
+    entry.thread = GetCurrentThreadId();
+    entry.kind = kind;
+    entry.rsp = info->ContextRecord->Rsp;
+    entry.rip = info->ContextRecord->Rip;
+    entry.address = info->ExceptionRecord->NumberParameters >= 2 ? info->ExceptionRecord->ExceptionInformation[1] : 0;
+    entry.tick = GetTickCount64();
+    static std::atomic_flag ranking = ATOMIC_FLAG_INIT;
+    if (((index + 1) & 0x1fff) == 0 && !ranking.test_and_set(std::memory_order_acquire)) {
+        std::fprintf(stderr, "[resumed-faults] %llu at %llu ms (guest-write %llu)\n", static_cast<unsigned long long>(index + 1), static_cast<unsigned long long>(entry.tick), static_cast<unsigned long long>(g_resumedByKind[2].load(std::memory_order_relaxed)));
+        static std::uint64_t rips[ResumedFaultCapacity];
+        for (std::size_t i = 0; i < ResumedFaultCapacity; ++i) rips[i] = g_resumedFaults[i].rip;
+        std::sort(rips, rips + ResumedFaultCapacity);
+        std::uint64_t topRip[6]{};
+        std::size_t topCount[6]{};
+        for (std::size_t i = 0; i < ResumedFaultCapacity;) {
+            std::size_t j = i;
+            while (j < ResumedFaultCapacity && rips[j] == rips[i]) ++j;
+            const auto count = j - i;
+            for (std::size_t slot = 0; slot < 6; ++slot) {
+                if (count <= topCount[slot]) continue;
+                for (std::size_t move = 5; move > slot; --move) {
+                    topCount[move] = topCount[move - 1];
+                    topRip[move] = topRip[move - 1];
+                }
+                topCount[slot] = count;
+                topRip[slot] = rips[i];
+                break;
+            }
+            i = j;
+        }
+        for (std::size_t slot = 0; slot < 6 && topCount[slot] != 0; ++slot) {
+            char where[160];
+            DescribeAddress(topRip[slot], where, sizeof(where));
+            std::fprintf(stderr, "[resumed-faults]   top rip %s x%zu of last %zu\n", where, topCount[slot], ResumedFaultCapacity);
+        }
+        ranking.clear(std::memory_order_release);
+    }
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+
 LONG WINAPI ReportCrash(EXCEPTION_POINTERS* info) {
     static std::atomic<bool> reported{false};
     const auto* fault = info->ExceptionRecord;
-    if (fault->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && fault->NumberParameters >= 2 && GuestArena::GuestArenaAwaitRetarget_nid_postfix(fault->ExceptionInformation[1], fault->ExceptionInformation[0])) return EXCEPTION_CONTINUE_EXECUTION;
-    if (fault->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && fault->NumberParameters >= 2 && fault->ExceptionInformation[0] == 1 && GuestArena::GuestArenaHandleWrite_nid_postfix(fault->ExceptionInformation[1])) return EXCEPTION_CONTINUE_EXECUTION;
-    if (HandleWatch(info)) return EXCEPTION_CONTINUE_EXECUTION;
-    if (HandleSse4a(info)) return EXCEPTION_CONTINUE_EXECUTION;
+    if (fault->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && fault->NumberParameters >= 2 && GuestArena::GuestArenaAwaitRetarget_nid_postfix(fault->ExceptionInformation[1], fault->ExceptionInformation[0])) return resumed(info, 1);
+    if (fault->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && fault->NumberParameters >= 2 && fault->ExceptionInformation[0] == 1 && GuestArena::GuestArenaHandleWrite_nid_postfix(fault->ExceptionInformation[1])) return resumed(info, 2);
+    if (HandleWatch(info)) return resumed(info, 3);
+    if (HandleSse4a(info)) return resumed(info, 4);
     const auto* record = info->ExceptionRecord;
     if (!IsFatal(record->ExceptionCode)) return EXCEPTION_CONTINUE_SEARCH;
     if (reported.exchange(true)) {
@@ -277,6 +338,21 @@ LONG WINAPI ReportCrash(EXCEPTION_POINTERS* info) {
     Report("  rsi %016llx rdi %016llx rbp %016llx rsp %016llx\n", context->Rsi, context->Rdi, context->Rbp, context->Rsp);
     Report("  r8  %016llx r9  %016llx r10 %016llx r11 %016llx\n", context->R8, context->R9, context->R10, context->R11);
     Report("  r12 %016llx r13 %016llx r14 %016llx r15 %016llx\n", context->R12, context->R13, context->R14, context->R15);
+    {
+        const auto total = g_resumedFaultCount.load(std::memory_order_relaxed);
+        Report("  resumed faults so far: %llu (retarget %llu, guest-write %llu, watch %llu, sse4a %llu); this thread's newest:\n", static_cast<unsigned long long>(total), static_cast<unsigned long long>(g_resumedByKind[1].load()), static_cast<unsigned long long>(g_resumedByKind[2].load()), static_cast<unsigned long long>(g_resumedByKind[3].load()), static_cast<unsigned long long>(g_resumedByKind[4].load()));
+        const auto self = GetCurrentThreadId();
+        const auto now = GetTickCount64();
+        int shown = 0;
+        for (std::uint64_t i = 0; i < std::min<std::uint64_t>(total, ResumedFaultCapacity) && shown < 12; ++i) {
+            const auto& entry = g_resumedFaults[(total - 1 - i) % ResumedFaultCapacity];
+            if (entry.thread != self) continue;
+            ++shown;
+            DescribeAddress(entry.rip, line, sizeof(line));
+            Report("    %s at %s, rsp %016llx (crash rsp %+lld), address 0x%llx, %llu ms ago\n", ResumedFaultKinds[entry.kind], line, static_cast<unsigned long long>(entry.rsp), static_cast<long long>(context->Rsp) - static_cast<long long>(entry.rsp), static_cast<unsigned long long>(entry.address), static_cast<unsigned long long>(now - entry.tick));
+        }
+        if (shown == 0) Report("    none on this thread in the last %zu resumed faults\n", ResumedFaultCapacity);
+    }
     // The words each register points at, to recognise which structure a bad pointer came from.
     {
         const std::pair<const char*, std::uint64_t> pointers[] = {{"rax", context->Rax}, {"rbx", context->Rbx}, {"rcx", context->Rcx}, {"rdx", context->Rdx}, {"rsi", context->Rsi}, {"rdi", context->Rdi}, {"r12", context->R12}, {"r13", context->R13}, {"r14", context->R14}, {"r15", context->R15}};
