@@ -587,10 +587,11 @@ void AddMapping(std::uintptr_t address, std::size_t len, std::uint64_t phys, int
             bytes += PS5_PAGE_SIZE;
         }
 #ifdef _WIN32
-        // bisect: never map direct memory as write-watched private pages (pre-#2054 behaviour)
-        static_cast<void>(ShareMappedPages(phys + offset, bytes));
-        constexpr bool privatePages = false;
-        page.backing->Map(address + offset, bytes, page.offset, nativeProt);
+        // bisect: never map direct memory as write-watched private pages (pre-#2054 behaviour) unless APS5_EXP_PRIVATE_DMEM is set
+        static const bool privateDirect = std::getenv("APS5_EXP_PRIVATE_DMEM") != nullptr;
+        const bool privatePages = !ShareMappedPages(phys + offset, bytes) && privateDirect;
+        if (privatePages) page.backing->MapPrivate(address + offset, bytes, page.offset, nativeProt);
+        else page.backing->Map(address + offset, bytes, page.offset, nativeProt);
 #else
         constexpr bool privatePages = false;
         page.backing->Map(address + offset, bytes, page.offset, nativeProt);
