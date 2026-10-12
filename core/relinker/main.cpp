@@ -22,6 +22,7 @@
 #include <relinker/pipeline/RelinkerPipeline.hpp>
 #include <relinker/guest/GuestImage.hpp>
 #include <codegen/IAmd64OnlyConverter.hpp>
+#include <codegen/x86/RedZoneFramer.hpp>
 #include <map>
 #include <codegen/CodegenException.hpp>
 #include <algorithm>
@@ -105,6 +106,14 @@ int Run(const int argc, char* argv[]) {
             if (patch.Offset > sourceBytes.size() || patch.Bytes.size() > sourceBytes.size() - patch.Offset)
                 throw Domain::RelinkerException("Relinker patch exceeds source image", patch.Offset);
             for (std::size_t index = 0; index < patch.Bytes.size(); ++index) sourceBytes[patch.Offset + index] = patch.Bytes[index];
+        }
+        if (args.frameRedZone) {
+            if (!args.toWindows) throw std::runtime_error("--frame-red-zone needs --windows: only Windows exception dispatch writes below RSP");
+            Codegen::RedZoneFrameReport report;
+            auto framed = Codegen::FrameRedZoneFunctions(sourceBytes, Relinker::ElfReader(sourceBytes).ReadCodeSegments(), trampolines, report);
+            std::cout << "Red-zone framing: " << report.Functions << " functions, " << report.RedZoneFunctions << " leaf functions keep values below RSP, " << report.Framed << " framed (" << report.Exits << " exits)\n";
+            for (const auto& [reason, count] : report.Skipped) std::cout << "Red-zone framing: skipped " << count << ": " << reason << '\n';
+            trampolines.insert(trampolines.end(), std::make_move_iterator(framed.begin()), std::make_move_iterator(framed.end()));
         }
 
         std::vector<Relinker::GuestArtifact> guestArtifacts;
