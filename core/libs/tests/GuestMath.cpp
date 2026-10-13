@@ -120,7 +120,8 @@ long double APS5_VABI nearbyintl_nid_postfix(long double);
 double APS5_VABI logb_nid_postfix(double);
 double APS5_VABI remainder_nid_postfix(double, double);
 }
-static void Require(bool value) { if (!value) std::abort(); }
+static void RequireAt(bool value, int line) { if (!value) { std::fprintf(stderr, "guest_math: Require failed at line %d\n", line); std::fflush(stderr); std::abort(); } }
+#define Require(value) RequireAt((value), __LINE__)
 
 static void CheckSquareRoot() {
     Require(sqrt_nid_postfix(4.) == 2. && sqrtf_nid_postfix(6.25f) == 2.5f);
