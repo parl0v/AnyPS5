@@ -21,7 +21,7 @@ env:
 
 jobs:
   linux:
-    if: github.repository == 'AlxcBTW/AnyPS5'
+    if: github.repository == 'parl0v/AnyPS5'
     # LEVER_LINUX_RUNNER is a JSON list of Namespace runner labels; without it the job runs on GitHub.
     runs-on: ${{ vars.LEVER_LINUX_RUNNER && fromJSON(vars.LEVER_LINUX_RUNNER) || 'ubuntu-latest' }}
     timeout-minutes: 30
@@ -73,7 +73,7 @@ jobs:
             END { for (name in max) if (max[name] > 30) printf "::warning title=Slow test::%s took %.1f s on %s; tests must finish in 30 s (CONTRIBUTING.md)\n", name, max[name], ENVIRON["RUNNER_OS"] }' ctest.log
 
   windows:
-    if: github.repository == 'AlxcBTW/AnyPS5'
+    if: github.repository == 'parl0v/AnyPS5'
     runs-on: ${{ vars.LEVER_WINDOWS_RUNNER || 'windows-latest' }}
     timeout-minutes: 45
     env:
