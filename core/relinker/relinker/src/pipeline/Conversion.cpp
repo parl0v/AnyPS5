@@ -19,6 +19,7 @@
 #include <relinker/guest/GuestImage.hpp>
 #include <codegen/IAmd64OnlyConverter.hpp>
 #include <codegen/x86/RedZoneFramer.hpp>
+#include <relinker/analysis/UnusedNidFilter/EhFrameReader.hpp>
 #include <map>
 #include <codegen/CodegenException.hpp>
 #include <algorithm>
@@ -93,10 +94,14 @@ ConversionOutput Conversion::Convert(ConversionInput input, const ConversionOpti
         for (std::size_t index = 0; index < patch.Bytes.size(); ++index) sourceBytes[patch.Offset + index] = patch.Bytes[index];
     }
     if (options.FrameRedZone) {
+        const auto headers = Relinker::ElfReader(sourceBytes).ReadProgramHeaders();
         std::vector<Domain::ProgramHeader> codeSegments;
-        for (const auto& header : Relinker::ElfReader(sourceBytes).ReadProgramHeaders()) if (header.Type == 1 && (header.Flags & 1) != 0) codeSegments.push_back(header);
+        for (const auto& header : headers) if (header.Type == 1 && (header.Flags & 1) != 0) codeSegments.push_back(header);
+        std::vector<Codegen::RedZoneFunction> functions;
+        for (const auto& region : Relinker::UnusedNidFilter::ReadExceptionFunctions(sourceBytes, headers, {}, {})) functions.push_back({region.Begin, region.End});
+        if (functions.empty()) throw Domain::RelinkerException("Red-zone framing needs function bounds from the executable's .eh_frame, and it has none");
         Codegen::RedZoneFrameReport report;
-        auto framed = Codegen::FrameRedZoneFunctions(sourceBytes, codeSegments, trampolines, report);
+        auto framed = Codegen::FrameRedZoneFunctions(sourceBytes, codeSegments, functions, trampolines, report);
         { std::ostringstream message; message << "Red-zone framing: " << report.Functions << " functions, " << report.RedZoneFunctions << " leaf functions keep values below RSP, " << report.Framed << " framed (" << report.Exits << " exits)\n"; inputProgress.Message(message.str()); }
         for (const auto& [reason, count] : report.Skipped) { std::ostringstream message; message << "Red-zone framing: skipped " << count << ": " << reason << '\n'; inputProgress.Message(message.str()); }
         trampolines.insert(trampolines.end(), std::make_move_iterator(framed.begin()), std::make_move_iterator(framed.end()));

@@ -11,6 +11,11 @@
 
 namespace Codegen {
 
+struct RedZoneFunction {
+    std::uint64_t Begin = 0;
+    std::uint64_t End = 0;
+};
+
 struct RedZoneFrameReport {
     std::size_t Functions = 0;
     std::size_t RedZoneFunctions = 0;
@@ -22,6 +27,7 @@ struct RedZoneFrameReport {
 std::vector<TrampolineSite> FrameRedZoneFunctions(
     const std::vector<std::uint8_t>& fileBytes,
     const std::vector<Domain::ProgramHeader>& codeSegments,
+    const std::vector<RedZoneFunction>& functions,
     const std::vector<TrampolineSite>& existing,
     RedZoneFrameReport& report
 );

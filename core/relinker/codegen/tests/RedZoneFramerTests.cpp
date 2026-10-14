@@ -43,6 +43,7 @@ std::vector<std::uint8_t> leaf(const std::vector<std::uint8_t>& body) {
 struct Image {
     std::vector<std::uint8_t> bytes;
     std::vector<Domain::ProgramHeader> segments;
+    std::vector<Codegen::RedZoneFunction> functions;
 };
 
 Image image(const std::vector<std::vector<std::uint8_t>>& functions) {
@@ -60,6 +61,7 @@ Image image(const std::vector<std::vector<std::uint8_t>>& functions) {
     for (std::size_t index = 0; index < functions.size(); ++index) {
         result.bytes = padTo(result.bytes, starts[index]);
         append(result.bytes, functions[index]);
+        result.functions.push_back({Base + starts[index], Base + starts[index] + functions[index].size()});
     }
     result.bytes = padTo(result.bytes, (result.bytes.size() + 15) / 16 * 16 + 16);
     result.segments.push_back({1, 5, 0, Base, Base, result.bytes.size(), result.bytes.size(), 16});
@@ -71,7 +73,7 @@ void framesRedZoneLeaf() {
     append(body, LoadBelowPushes);
     const auto input = image({leaf(body)});
     Codegen::RedZoneFrameReport report;
-    const auto sites = Codegen::FrameRedZoneFunctions(input.bytes, input.segments, {}, report);
+    const auto sites = Codegen::FrameRedZoneFunctions(input.bytes, input.segments, input.functions, {}, report);
     require(report.RedZoneFunctions == 1 && report.Framed == 1 && report.Exits == 1, "a red-zone leaf was not framed");
     require(sites.size() == 2, "a framed leaf needs one prologue and one exit site");
 
@@ -97,7 +99,7 @@ void leavesOtherFunctions() {
     append(nonLeaf, Exit);
     const auto input = image({leaf(LoadAbovePushes), nonLeaf});
     Codegen::RedZoneFrameReport report;
-    const auto sites = Codegen::FrameRedZoneFunctions(input.bytes, input.segments, {}, report);
+    const auto sites = Codegen::FrameRedZoneFunctions(input.bytes, input.segments, input.functions, {}, report);
     require(sites.empty() && report.RedZoneFunctions == 0, "a leaf without red-zone use or a function that calls was framed");
 }
 
@@ -107,8 +109,37 @@ void skipsSitesTakenByOtherStubs() {
     other.Address = Base + 0x40;
     other.Length = 5;
     Codegen::RedZoneFrameReport report;
-    const auto sites = Codegen::FrameRedZoneFunctions(input.bytes, input.segments, {other}, report);
+    const auto sites = Codegen::FrameRedZoneFunctions(input.bytes, input.segments, input.functions, {other}, report);
     require(sites.empty() && report.Skipped.at("overlaps another stub") == 1, "a site over another stub was framed");
+}
+
+void framesAPointerOnlyFunctionByItsOwnBounds() {
+    const auto first = leaf(StoreBelowPushes);
+    std::vector<std::uint8_t> secondBody = StoreBelowPushes;
+    append(secondBody, LoadBelowPushes);
+    const auto second = leaf(secondBody);
+    std::vector<std::uint8_t> bytes = callTo(0, 0x40);
+    bytes.push_back(0xc3);
+    bytes = padTo(bytes, 0x40);
+    append(bytes, first);
+    const auto secondStart = bytes.size();
+    append(bytes, second);
+    bytes = padTo(bytes, (bytes.size() + 15) / 16 * 16 + 16);
+    const std::vector<Domain::ProgramHeader> segments{{1, 5, 0, Base, Base, bytes.size(), bytes.size(), 16}};
+    const std::vector<Codegen::RedZoneFunction> functions{{Base + 0x40, Base + 0x40 + first.size()}, {Base + secondStart, Base + secondStart + second.size()}};
+    Codegen::RedZoneFrameReport report;
+    const auto sites = Codegen::FrameRedZoneFunctions(bytes, segments, functions, {}, report);
+    require(report.Functions == 2 && report.Framed == 2 && report.Exits == 2, "a function reached only through a pointer was not framed by its own bounds");
+    require(sites.size() == 4, "two framed leaves need two prologue and two exit sites");
+    require(sites[2].Address == Base + secondStart && sites[2].OriginalBytes == Prologue, "the second function's prologue site is not at its own start");
+    require(sites[1].Address + sites[1].Length == Base + 0x40 + first.size(), "the first function's exit runs past its end");
+}
+
+void leavesCodeWithoutAFunctionRange() {
+    const auto input = image({leaf(StoreBelowPushes)});
+    Codegen::RedZoneFrameReport report;
+    const auto sites = Codegen::FrameRedZoneFunctions(input.bytes, input.segments, {}, {}, report);
+    require(sites.empty() && report.Functions == 0, "code without a function range was framed");
 }
 
 }
@@ -118,6 +149,8 @@ int main() {
         framesRedZoneLeaf();
         leavesOtherFunctions();
         skipsSitesTakenByOtherStubs();
+        framesAPointerOnlyFunctionByItsOwnBounds();
+        leavesCodeWithoutAFunctionRange();
         std::cout << "red-zone framer tests passed\n";
         return 0;
     } catch (const std::exception& error) {
