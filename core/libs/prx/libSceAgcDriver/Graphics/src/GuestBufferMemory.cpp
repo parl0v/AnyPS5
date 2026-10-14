@@ -1026,7 +1026,8 @@ const HostImport* importRunAt(const Context& context, HostImports& state, Import
     VkResult result = VK_SUCCESS;
     const char* step = nullptr;
 #ifdef _WIN32
-    const bool watchedHostPointer = entry.alias != nullptr || !state.unwatchImports;
+    static const bool watchPrivate = std::getenv("APS5_EXP_WATCH_PRIVATE_IMPORTS") != nullptr;
+    const bool watchedHostPointer = entry.alias != nullptr || !state.unwatchImports || (watchPrivate && writable && GuestMemory::WriteWatched());
     const bool watchedDmaBuf = watchedHostPointer;
 #else
     const bool watchedHostPointer = !state.unwatchImports;
