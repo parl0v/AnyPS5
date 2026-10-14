@@ -166,6 +166,12 @@ struct Context {
     std::uint32_t sparseFamily = VK_QUEUE_FAMILY_IGNORED;
     VkQueue sparseQueue = VK_NULL_HANDLE;
     std::mutex* sparseQueueMutex = nullptr;
+    // Windows: a second queue of the graphics family, its pool and its lock, for the read that settles a
+    // new host import (GuestBufferMemory). Taken under the imports lock, which the main queue's
+    // GuestMemory::GpuMutex must not be.
+    VkQueue settleQueue = VK_NULL_HANDLE;
+    VkCommandPool settlePool = VK_NULL_HANDLE;
+    std::mutex* settleQueueMutex = nullptr;
     PFN_vkGetPhysicalDeviceMemoryProperties2 memoryProperties2 = nullptr;
     RenderCache* renderCache = nullptr;
     DrawQueue* drawQueue = nullptr;
